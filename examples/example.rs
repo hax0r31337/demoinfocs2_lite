@@ -45,16 +45,6 @@ fn main() -> Result<(), std::io::Error> {
     Ok(())
 }
 
-#[inline(never)]
-fn test(test_serializer: &dyn EntitySerializer) -> Result<(), std::io::Error> {
-    let v = vec![0u8; 12];
-    let reader = Cursor::new(v.as_slice());
-    let mut reader = BitReader::endian(reader, bitstream_io::LittleEndian);
-    test_serializer.decode(None, &[], &mut reader)?;
-
-    Ok(())
-}
-
 #[derive(GameEvent, Default, Debug)]
 #[game_event(crate_path = demoinfocs2_lite)]
 pub struct PlayerHurtEvent {

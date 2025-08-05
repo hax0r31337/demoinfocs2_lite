@@ -6,16 +6,19 @@ use bitstream_io::BitRead;
 
 use crate::{bit::BitReaderExt, entity::Reader};
 
+#[repr(C)]
 pub struct FieldPath {
     pub path: [i32; 7],
     pub last: u8,
     pub is_done: bool,
+    _padding: [u8; 2],
 }
 
 pub const DEFAULT_FIELD_PATH: FieldPath = FieldPath {
     path: [-1, 0, 0, 0, 0, 0, 0],
     last: 0,
     is_done: false,
+    _padding: [0; 2],
 };
 
 impl PartialEq for FieldPath {
@@ -43,15 +46,18 @@ impl FieldPath {
 
     #[inline(always)]
     pub fn finish(&self, paths: &mut Vec<FieldPathFixed>) {
-        paths.reserve(1);
-
         let len = paths.len();
+        if paths.capacity() == len {
+            paths.reserve(64);
+        }
+
         unsafe {
             let ptr = paths.as_mut_ptr().add(len);
-            let fixed_ptr = (*ptr).0.as_mut_ptr();
-            let path_u32: [u32; 7] = std::mem::transmute(self.path);
-            *fixed_ptr.cast::<[u32; 7]>() = path_u32;
-            *fixed_ptr.add(7) = self.last as u32;
+            std::ptr::copy_nonoverlapping(
+                self as *const FieldPath as *const FieldPathFixed,
+                ptr,
+                1,
+            );
             paths.set_len(len + 1);
         }
     }

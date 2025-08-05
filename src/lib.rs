@@ -21,7 +21,7 @@ use crate::bit::BitReaderExt;
 use crate::entity::EntitySerializerCreator;
 use crate::entity::fieldpath::FieldPathFixed;
 use crate::entity::list::EntityList;
-use crate::entity::serializer::{EntityClassSerializer, EntitySerializer};
+use crate::entity::serializer::EntityClassSerializer;
 use crate::event::{EventManager, MapChangeEvent, TickEvent};
 use crate::game_event::derive::{GameEventSerializer, GameEventSerializerFactory};
 use crate::protobuf::{EBaseGameEvents, EDemoCommands, SvcMessages};
@@ -188,22 +188,22 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             let message_type = r.read_ubit_int()?;
             let size = r.read_varint_u64()? as usize;
 
-            let buf = if r.byte_aligned() {
-                // perform zero-copy if possible
-                let pos = r.position_in_bits()? as usize >> 3;
-                let buf = data.slice(pos..pos + size);
-                r.seek_bits(std::io::SeekFrom::Current((size as i64) << 3))?;
-                buf
-            } else {
-                let mut buf = self.alloc_bytes(size);
-                r.read_bytes(&mut buf)?;
-                buf.freeze()
-            };
-
             macro_rules! handle_message {
                 ($(($mt:expr, $handler:ident)),*) => {
                     $(
                         if message_type == $mt as u32 {
+                            let buf = if r.byte_aligned() {
+                                // perform zero-copy if possible
+                                let pos = r.position_in_bits()? as usize >> 3;
+                                let buf = data.slice(pos..pos + size);
+                                r.seek_bits(std::io::SeekFrom::Current((size as i64) << 3))?;
+                                buf
+                            } else {
+                                let mut buf = self.alloc_bytes(size);
+                                r.read_bytes(&mut buf)?;
+                                buf.freeze()
+                            };
+
                             let msg = self.parse_demo_message(buf, false)?;
 
                             self.$handler(msg)?;
@@ -234,6 +234,8 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                 ),
                 (SvcMessages::SvcServerInfo, handle_server_info)
             );
+
+            r.seek_bits(std::io::SeekFrom::Current((size as i64) << 3))?;
         }
 
         Ok(())

@@ -21,7 +21,8 @@ use crate::{
         fieldpath::read_field_paths,
         list::EntityItem,
         serializer::{
-            EntityClassSerializer, EntitySerializer, PolymorphicSerializer, UnknownEntitySerializer,
+            EntityClassSerializer, EntitySerializer, PolymorphicSerializer, UnknownEntity,
+            UnknownEntitySerializer,
         },
     },
     protobuf::{self},
@@ -234,10 +235,9 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
 
     pub(super) fn handle_packet_entities(
         &mut self,
-        mut msg: protobuf::CsvcMsgPacketEntities,
+        msg: protobuf::CsvcMsgPacketEntities,
     ) -> Result<(), std::io::Error> {
-        let (Some(data), Some(entries)) = (msg.entity_data.take(), msg.updated_entries.take())
-        else {
+        let (Some(data), Some(entries)) = (msg.entity_data, msg.updated_entries) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Missing data or number of entries in packet entities",
@@ -246,11 +246,11 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
 
         let has_pvs_vis_bits = msg.has_pvs_vis_bits_deprecated.unwrap_or(0) > 0;
 
-        let len = (data.len() << 3) as u64;
+        // let len = (data.len() << 3) as u64;
         let mut r = BitReader::endian(Cursor::new(data.as_ref()), bitstream_io::LittleEndian);
         let mut idx: i32 = -1;
 
-        for _ in 0..entries as u32 {
+        for entry in 0..entries {
             idx += r.read_ubit_int()? as i32 + 1;
             let cmd = r.read_unsigned::<2, u8>()?;
 
@@ -301,6 +301,11 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                     ));
                 };
 
+                if entry == entries - 1 && entity.item.is::<UnknownEntity>() {
+                    // if the last entity is an unknown entity, we can skip reading the fields
+                    continue;
+                }
+
                 read_field_paths(&mut r, &mut self.field_path_cache)?;
 
                 for field_path in &self.field_path_cache {
@@ -317,10 +322,10 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             }
         }
 
-        let bits = len - r.position_in_bits()?;
-        if bits >= 8 {
-            error!("packet entities did not consume all data: {bits}");
-        }
+        // let bits = len - r.position_in_bits()?;
+        // if bits >= 8 {
+        //     error!("packet entities did not consume all data: {bits}");
+        // }
 
         Ok(())
     }
