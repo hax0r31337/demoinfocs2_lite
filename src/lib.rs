@@ -58,6 +58,18 @@ pub struct CsDemoParserState {
     pub map_name: String,
 
     pub entities: EntityList,
+    user_info: Option<StringTable<BaselineStringTableParser, protobuf::CMsgPlayerInfo>>,
+}
+
+impl CsDemoParserState {
+    pub fn get_player_info(&self, index: u16) -> Option<&protobuf::CMsgPlayerInfo> {
+        let Some(user_info) = &self.user_info else {
+            return None;
+        };
+
+        let key = index.to_string();
+        user_info.get_cached(&key)
+    }
 }
 
 impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
@@ -94,6 +106,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                 map_name: String::new(),
                 // most demos seems doesn't exceed 0x400 entities
                 entities: EntityList::new(),
+                user_info: None,
             },
             class_info: HashMap::new(),
             class_id_size: 0,

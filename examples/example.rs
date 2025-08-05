@@ -23,10 +23,32 @@ fn main() -> Result<(), std::io::Error> {
             Ok(())
         });
 
-    parser.register_game_event_serializer_factory("player_hurt", PlayerHurtEvent::factory)?;
+    parser.register_game_event_serializer_factory("player_death", PlayerDeathEvent::factory)?;
     parser.event_manager.register_listener(
-        |event: &PlayerHurtEvent, _state: &CsDemoParserState| {
-            // println!("{event:?}");
+        |event: &PlayerDeathEvent, state: &CsDemoParserState| {
+            let attacker_name = state
+                .get_player_info(event.attacker)
+                .map_or("unknown", |p| p.name.as_ref().unwrap());
+            let victim_name = state
+                .get_player_info(event.userid)
+                .map_or("unknown", |p| p.name.as_ref().unwrap());
+
+            let player = state
+                .entities
+                .get_entity_by_index::<CCSPlayerController>(event.attacker as u32 + 1);
+
+            println!(
+                "Player {} killed {} with {} (headshot: {}, penetrated: {}, noscope: {}, thrusmoke: {}, distance: {:.2}, ping: {}ms)",
+                attacker_name,
+                victim_name,
+                event.weapon,
+                event.headshot,
+                event.penetrated > 0,
+                event.noscope,
+                event.thrusmoke,
+                event.distance,
+                player.map_or(0, |p| p.ping)
+            );
 
             Ok(())
         },
@@ -48,12 +70,16 @@ fn main() -> Result<(), std::io::Error> {
 
 #[derive(GameEvent, Default, Debug)]
 #[game_event(crate_path = demoinfocs2_lite)]
-pub struct PlayerHurtEvent {
-    pub dmg_health: u16,
-    pub dmg_armor: u8,
-    pub health: u8,
-    pub armor: u8,
+pub struct PlayerDeathEvent {
+    pub attacker: u16,
+    pub userid: u16,
     pub weapon: String,
+
+    pub headshot: bool,
+    pub penetrated: u16,
+    pub noscope: bool,
+    pub thrusmoke: bool,
+    pub distance: f32,
 }
 
 #[derive(EntityClass, Clone, Default)]

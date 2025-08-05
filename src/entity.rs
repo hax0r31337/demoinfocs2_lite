@@ -349,7 +349,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             return Ok(serializer.new_entity());
         };
 
-        let baseline_key = format!("{class_id}");
+        let baseline_key = class_id.to_string();
 
         if let Some(entity) = instance_baseline.get_cached(&baseline_key) {
             return serializer.clone_entity(entity.as_ref());

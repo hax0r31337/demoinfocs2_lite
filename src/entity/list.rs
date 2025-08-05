@@ -128,6 +128,13 @@ impl EntityList {
         old_entity.replace(entity)
     }
 
+    pub fn get_entity_by_index<T: EntityField>(&self, index: u32) -> Option<&T> {
+        let idx = index as usize;
+        let entity = self.get(idx)?;
+
+        entity.item.downcast_ref::<T>()
+    }
+
     pub fn get_entity_by_handle<T: EntityField>(&self, handle: u64) -> Option<&T> {
         let idx = (handle & ENTITY_HANDLE_INDEX_MASK) as usize;
         let entity = self.get(idx)?;

@@ -1,20 +1,36 @@
 use std::io::Cursor;
 
 use bitstream_io::{BitRead, BitReader};
+use bytes::Bytes;
 use foldhash::{HashMap, HashMapExt};
 use log::error;
+use prost::Message;
 
 use crate::{CsDemoParser, bit::BitReaderExt, protobuf};
 
 pub const STRING_TABLE_INSTANCE_BASELINE: &str = "instancebaseline";
+pub const STRING_TABLE_USER_INFO: &str = "userinfo";
 
 type StringTableMap = HashMap<String, (i32, Option<Box<[u8]>>)>;
+pub type StringTableCacheFunction<T> =
+    Box<dyn Fn(&str, Option<&[u8]>) -> Result<StringTableCache<T>, std::io::Error> + Send + Sync>;
+
+pub enum StringTableCache<T: Send + Sync> {
+    Parsed(T),
+    NotChanged,
+    RemovePrevious,
+}
 
 pub struct StringTable<P: StringTableParser + Send + Sync, T: Send + Sync> {
     pub parser: P,
 
     pub map: StringTableMap,
-    cache: HashMap<String, T>,
+    pub cache: HashMap<String, T>,
+
+    /// cache will be created on update if cache_function is provided
+    /// if cache_function is None, cache will not be created
+    /// and users have to call `put_cache` manually
+    cache_function: Option<StringTableCacheFunction<T>>,
 }
 
 impl<P, T> StringTable<P, T>
@@ -27,6 +43,16 @@ where
             parser,
             map: HashMap::new(),
             cache: HashMap::new(),
+            cache_function: None,
+        }
+    }
+
+    pub fn with_cache_function(parser: P, cache_function: StringTableCacheFunction<T>) -> Self {
+        Self {
+            parser,
+            map: HashMap::new(),
+            cache: HashMap::new(),
+            cache_function: Some(cache_function),
         }
     }
 
@@ -49,7 +75,12 @@ where
 
 pub trait StringTableUpdatable {
     fn update(&mut self, entries: i32, data: &[u8]) -> Result<(), std::io::Error>;
-    fn insert(&mut self, key: String, index: i32, value: Option<Box<[u8]>>);
+    fn insert(
+        &mut self,
+        key: String,
+        index: i32,
+        value: Option<Box<[u8]>>,
+    ) -> Result<(), std::io::Error>;
 }
 
 impl<P, T> StringTableUpdatable for StringTable<P, T>
@@ -58,41 +89,67 @@ where
     T: Send + Sync,
 {
     fn update(&mut self, entries: i32, data: &[u8]) -> Result<(), std::io::Error> {
-        self.parser
-            .update(&mut self.map, &mut self.cache, entries, data)
+        let new_keys = self.parser.update(&mut self.map, entries, data)?;
+
+        if let Some(cache_function) = &self.cache_function {
+            for key in new_keys.into_iter() {
+                let cache_result = cache_function(&key, self.get_raw(&key))?;
+
+                match cache_result {
+                    StringTableCache::Parsed(value) => {
+                        self.cache.insert(key, value);
+                    }
+                    StringTableCache::NotChanged => {}
+                    StringTableCache::RemovePrevious => {
+                        self.cache.remove(&key);
+                    }
+                }
+            }
+        } else {
+            for key in new_keys.iter() {
+                self.cache.remove(key);
+            }
+        }
+
+        Ok(())
     }
 
-    fn insert(&mut self, key: String, index: i32, value: Option<Box<[u8]>>) {
-        // invalidate cache for this key
-        self.cache.remove(&key);
+    fn insert(
+        &mut self,
+        key: String,
+        index: i32,
+        value: Option<Box<[u8]>>,
+    ) -> Result<(), std::io::Error> {
+        if let Some(cache_function) = &self.cache_function {
+            let cache_result = cache_function(&key, value.as_deref())?;
+
+            match cache_result {
+                StringTableCache::Parsed(parsed) => {
+                    self.cache.insert(key.clone(), parsed);
+                }
+                StringTableCache::NotChanged => {}
+                StringTableCache::RemovePrevious => {
+                    self.cache.remove(&key);
+                }
+            }
+        } else {
+            // invalidate cache for this key
+            self.cache.remove(&key);
+        }
 
         self.map.insert(key, (index, value));
-    }
-}
 
-pub trait CacheInvalidator {
-    fn remove(&mut self, key: &str);
-}
-
-impl<T> CacheInvalidator for HashMap<String, T>
-where
-    T: Send + Sync,
-{
-    fn remove(&mut self, key: &str) {
-        self.remove(key);
+        Ok(())
     }
 }
 
 pub trait StringTableParser {
-    fn update<CI>(
+    fn update(
         &self,
         map: &mut StringTableMap,
-        cache_invalidator: &mut CI,
         entries: i32,
         data: &[u8],
-    ) -> Result<(), std::io::Error>
-    where
-        CI: CacheInvalidator;
+    ) -> Result<Vec<String>, std::io::Error>;
 }
 
 const STRING_TABLE_PARSE_MAX_CACHE_SIZE: usize = 1 << 5;
@@ -105,20 +162,18 @@ pub struct BaselineStringTableParser {
 }
 
 impl StringTableParser for BaselineStringTableParser {
-    fn update<CI>(
+    fn update(
         &self,
         map: &mut StringTableMap,
-        cache_invalidator: &mut CI,
         entries: i32,
         data: &[u8],
-    ) -> Result<(), std::io::Error>
-    where
-        CI: CacheInvalidator,
-    {
+    ) -> Result<Vec<String>, std::io::Error> {
         let mut r = BitReader::endian(Cursor::new(data), bitstream_io::LittleEndian);
 
         let mut idx: i32 = 0;
         let mut keys = Vec::with_capacity(STRING_TABLE_PARSE_MAX_CACHE_SIZE);
+
+        let mut new_keys = Vec::with_capacity(STRING_TABLE_PARSE_MAX_CACHE_SIZE);
 
         for _ in 0..entries {
             let incr = r.read_bit()?;
@@ -214,7 +269,7 @@ impl StringTableParser for BaselineStringTableParser {
                 continue;
             };
 
-            cache_invalidator.remove(&key);
+            new_keys.push(key.clone());
             map.insert(key, (idx, value.map(Box::from)));
         }
 
@@ -223,7 +278,7 @@ impl StringTableParser for BaselineStringTableParser {
             error!("string table update did not consume all data: {bits}");
         }
 
-        Ok(())
+        Ok(new_keys)
     }
 }
 
@@ -231,6 +286,11 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
     pub(super) fn get_string_table(&mut self, name: &str) -> Option<&mut dyn StringTableUpdatable> {
         if name == STRING_TABLE_INSTANCE_BASELINE {
             self.instance_baseline
+                .as_mut()
+                .map(|t| t as &mut dyn StringTableUpdatable)
+        } else if name == STRING_TABLE_USER_INFO {
+            self.state
+                .user_info
                 .as_mut()
                 .map(|t| t as &mut dyn StringTableUpdatable)
         } else {
@@ -243,12 +303,26 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         &mut self,
         msg: protobuf::CsvcMsgCreateStringTable,
     ) -> Result<(), std::io::Error> {
-        let (Some(name), Some(entries), Some(string_data), Some(data_compressed)) = (
+        let (
+            Some(name),
+            Some(entries),
+            Some(string_data),
+            Some(data_compressed),
+            Some(user_data_fixed_size),
+            Some(user_data_size),
+            Some(flags),
+            Some(using_varint_bitcounts),
+        ) = (
             msg.name,
             msg.num_entries,
             msg.string_data,
             msg.data_compressed,
-        ) else {
+            msg.user_data_fixed_size,
+            msg.user_data_size,
+            msg.flags,
+            msg.using_varint_bitcounts,
+        )
+        else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Missing values in create string table message",
@@ -258,24 +332,6 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         self.string_tables.push(name.clone());
 
         let table: &mut dyn StringTableUpdatable = if name == STRING_TABLE_INSTANCE_BASELINE {
-            let (
-                Some(user_data_fixed_size),
-                Some(user_data_size),
-                Some(flags),
-                Some(using_varint_bitcounts),
-            ) = (
-                msg.user_data_fixed_size,
-                msg.user_data_size,
-                msg.flags,
-                msg.using_varint_bitcounts,
-            )
-            else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Missing values in baseline string table",
-                ));
-            };
-
             let table = StringTable::new(BaselineStringTableParser {
                 user_data_fixed_size,
                 user_data_size,
@@ -286,6 +342,20 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             self.instance_baseline = Some(table);
 
             self.instance_baseline.as_mut().unwrap()
+        } else if name == STRING_TABLE_USER_INFO {
+            let table = StringTable::with_cache_function(
+                BaselineStringTableParser {
+                    user_data_fixed_size,
+                    user_data_size,
+                    flags,
+                    using_varint_bitcounts,
+                },
+                Box::new(cache_user_info),
+            );
+
+            self.state.user_info = Some(table);
+
+            self.state.user_info.as_mut().unwrap()
         } else {
             return Ok(());
         };
@@ -363,10 +433,29 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                     name,
                     index as i32,
                     item.data.map(|data| data.to_vec().into_boxed_slice()),
-                );
+                )?;
             }
         }
 
         Ok(())
     }
+}
+
+fn cache_user_info(
+    key: &str,
+    value: Option<&[u8]>,
+) -> Result<StringTableCache<protobuf::CMsgPlayerInfo>, std::io::Error> {
+    let Some(value) = value else {
+        return Ok(StringTableCache::NotChanged);
+    };
+
+    let buf = Bytes::copy_from_slice(value);
+    protobuf::CMsgPlayerInfo::decode(buf)
+        .map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to decode user info for key {key}: {err:?}"),
+            )
+        })
+        .map(StringTableCache::Parsed)
 }
