@@ -73,6 +73,13 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         &mut self,
         msg: protobuf::CDemoSendTables,
     ) -> Result<(), std::io::Error> {
+        if !self.entity_serializers.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Demo send tables already processed",
+            ));
+        }
+
         if let Some(instance_baseline) = self.instance_baseline.as_mut() {
             instance_baseline.purge_cache();
         }
@@ -228,7 +235,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             );
         }
 
-        self.serializers = serializers;
+        self.entity_serializers = serializers;
 
         Ok(())
     }
@@ -269,7 +276,8 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                         ));
                     };
 
-                    let Some((serializer, serialize_baseline)) = self.serializers.get(class_name)
+                    let Some((serializer, serialize_baseline)) =
+                        self.entity_serializers.get(class_name)
                     else {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
@@ -280,6 +288,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                     let serializer = serializer.clone();
 
                     let entity = EntityItem {
+                        index: idx as u32,
                         serial,
                         item: if *serialize_baseline {
                             self.parse_entity_from_baseline(class_id, serializer.as_ref())?
@@ -289,12 +298,12 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                         serializer,
                     };
 
-                    self.entities.insert(idx as usize, entity);
+                    self.state.entities.insert(idx as usize, entity);
                 } else if has_pvs_vis_bits && r.read_unsigned::<2, u8>()? & 1 != 0 {
                     continue;
                 }
 
-                let Some(entity) = self.entities.get_mut(idx as usize) else {
+                let Some(entity) = self.state.entities.get_mut(idx as usize) else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("Entity at index {idx} not found for update"),
@@ -317,7 +326,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                 }
 
                 self.field_path_cache.clear();
-            } else if self.entities.delete(idx as usize).is_none() {
+            } else if self.state.entities.delete(idx as usize).is_none() {
                 error!("Entity at index {idx} not found for deletion");
             }
         }

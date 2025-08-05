@@ -13,5 +13,6 @@ pub trait GameEventSerializer: Send + Sync {
         &self,
         keys: Vec<KeyT>,
         event_manager: &mut EventManager,
+        state: &crate::CsDemoParserState,
     ) -> Result<(), std::io::Error>;
 }

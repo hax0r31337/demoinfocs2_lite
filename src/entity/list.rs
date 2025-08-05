@@ -1,6 +1,6 @@
 use std::{any::Any, sync::Arc};
 
-use crate::entity::serializer::EntityClassSerializer;
+use crate::entity::serializer::{EntityClassSerializer, EntityField};
 
 const MAX_ENTITIES_IN_LIST: usize = 512;
 const MAX_ENTITY_LISTS: usize = 64;
@@ -8,10 +8,20 @@ const MAX_ENTITY_LISTS: usize = 64;
 const ENTITY_CHUNK_SHIFT: u32 = MAX_ENTITIES_IN_LIST.trailing_zeros();
 const ENTITY_OFFSET_MASK: usize = MAX_ENTITIES_IN_LIST - 1;
 
+const MAX_EDICT_BITS: usize = 14;
+const ENTITY_HANDLE_INDEX_MASK: u64 = (1 << MAX_EDICT_BITS) - 1;
+
 pub struct EntityItem {
+    pub index: u32,
     pub serial: u32,
     pub item: Box<dyn Any + Send + Sync>,
     pub serializer: Arc<dyn EntityClassSerializer>,
+}
+
+impl EntityItem {
+    pub fn get_handle(&self) -> u64 {
+        ((self.serial as u64) << MAX_EDICT_BITS) | (self.index as u64)
+    }
 }
 
 /// a simple implementation of CConcreteEntityList
@@ -116,5 +126,36 @@ impl EntityList {
             chunk.counter += 1;
         }
         old_entity.replace(entity)
+    }
+
+    pub fn get_entity_by_handle<T: EntityField>(&self, handle: u64) -> Option<&T> {
+        let idx = (handle & ENTITY_HANDLE_INDEX_MASK) as usize;
+        let entity = self.get(idx)?;
+        let serial = (handle >> MAX_EDICT_BITS) as u32;
+
+        if entity.serial != serial {
+            return None;
+        }
+
+        entity.item.downcast_ref::<T>()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &EntityItem> {
+        self.entity_chunk
+            .iter()
+            .filter_map(|chunk| chunk.as_ref())
+            .flat_map(|chunk| chunk.entities.iter().filter_map(|e| e.as_ref()))
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut EntityItem> {
+        self.entity_chunk
+            .iter_mut()
+            .filter_map(|chunk| chunk.as_mut())
+            .flat_map(|chunk| chunk.entities.iter_mut().filter_map(|e| e.as_mut()))
+    }
+
+    pub fn iter_entity<T: EntityField>(&self) -> impl Iterator<Item = (&EntityItem, &T)> {
+        self.iter()
+            .filter_map(|item| item.item.downcast_ref::<T>().map(|e| (item, e)))
     }
 }

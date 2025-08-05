@@ -22,7 +22,7 @@ use crate::entity::EntitySerializerCreator;
 use crate::entity::fieldpath::FieldPathFixed;
 use crate::entity::list::EntityList;
 use crate::entity::serializer::EntityClassSerializer;
-use crate::event::{EventManager, MapChangeEvent, TickEvent};
+use crate::event::{DemoEndEvent, Event, EventManager, MapChangeEvent, TickEvent};
 use crate::game_event::derive::{GameEventSerializer, GameEventSerializerFactory};
 use crate::protobuf::{EBaseGameEvents, EDemoCommands, SvcMessages};
 use crate::string_table::{BaselineStringTableParser, StringTable};
@@ -34,16 +34,12 @@ pub struct CsDemoParser<T: std::io::BufRead + Send + Sync> {
     reader: T,
 
     pub event_manager: EventManager,
-
-    pub tick: u32,
-    pub tick_interval: f32,
-    pub map_name: String,
+    pub state: CsDemoParserState,
 
     class_info: HashMap<u32, String>,
     class_id_size: u32,
     entity_serializer_creators: HashMap<&'static str, EntitySerializerCreator>,
-    serializers: HashMap<String, (Arc<dyn EntityClassSerializer>, bool)>,
-    pub entities: EntityList,
+    entity_serializers: HashMap<String, (Arc<dyn EntityClassSerializer>, bool)>,
 
     game_event_serializers: HashMap<&'static str, GameEventSerializerFactory>,
     game_event_list: HashMap<i32, Box<dyn GameEventSerializer>>,
@@ -56,8 +52,30 @@ pub struct CsDemoParser<T: std::io::BufRead + Send + Sync> {
     buffer: BytesMut,
 }
 
+pub struct CsDemoParserState {
+    pub tick: u32,
+    pub tick_interval: f32,
+    pub map_name: String,
+
+    pub entities: EntityList,
+}
+
 impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
-    pub fn new(mut reader: T) -> Result<CsDemoParser<T>, std::io::Error> {
+    pub fn new(reader: T) -> Result<CsDemoParser<T>, std::io::Error> {
+        Self::new_with_serializers(reader, HashMap::default(), HashMap::default())
+    }
+
+    pub fn new_with_serializers(
+        mut reader: T,
+        game_event_serializers: HashMap<&'static str, GameEventSerializerFactory>,
+        entity_serializer_creators: HashMap<&'static str, EntitySerializerCreator>,
+    ) -> Result<CsDemoParser<T>, std::io::Error> {
+        /* struct protodemoheader_t
+        {
+            char demofilestamp[ 8 ]; // PROTODEMO_HEADER_ID
+            int32 fileinfo_offset;
+        }; */
+        // header + offset + 4 bytes padding
         let mut magic = [0u8; 16];
         reader.read_exact(&mut magic)?;
         if &magic[0..8] != b"PBDEMS2\0" {
@@ -70,22 +88,28 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         Ok(CsDemoParser {
             reader,
             event_manager: EventManager::new(),
-            tick: 0,
-            tick_interval: 1.0 / 64.0,
-            map_name: String::new(),
+            state: CsDemoParserState {
+                tick: 0,
+                tick_interval: 1.0 / 64.0, // default tick interval
+                map_name: String::new(),
+                // most demos seems doesn't exceed 0x400 entities
+                entities: EntityList::new(),
+            },
             class_info: HashMap::new(),
             class_id_size: 0,
-            game_event_serializers: HashMap::new(),
+            entity_serializer_creators,
+            entity_serializers: HashMap::new(),
+            game_event_serializers,
             game_event_list: HashMap::new(),
-            // most demos seems doesn't exceed 0x400 entities
-            entities: EntityList::new(),
             string_tables: Vec::with_capacity(16),
             instance_baseline: None,
-            entity_serializer_creators: HashMap::new(),
-            serializers: HashMap::new(),
             field_path_cache: Vec::with_capacity(256),
             buffer: BytesMut::with_capacity(BUFFER_SIZE),
         })
+    }
+
+    pub fn notify_listeners<E: Event>(&mut self, event: E) -> Result<(), std::io::Error> {
+        self.event_manager.notify_listeners(event, &self.state)
     }
 
     /// checks if the parser is fresh, i.e. has not parsed any frames yet
@@ -93,7 +117,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
     pub fn is_fresh(&self) -> bool {
         // map_name is read from the demo file header frame
         // which is the first frame
-        self.map_name.is_empty()
+        self.state.map_name.is_empty()
     }
 
     /// claim a buffer with the given size from the pool
@@ -156,7 +180,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         msg: protobuf::CsvcMsgServerInfo,
     ) -> Result<(), std::io::Error> {
         if let Some(tick_interval) = msg.tick_interval {
-            self.tick_interval = tick_interval;
+            self.state.tick_interval = tick_interval;
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -265,9 +289,9 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             let event = MapChangeEvent {
                 map_name: map_name.clone(),
             };
-            self.event_manager.notify_listeners(event);
+            self.notify_listeners(event)?;
 
-            self.map_name = map_name;
+            self.state.map_name = map_name;
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -321,17 +345,18 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         self.reader.read_exact(&mut buf)?;
         let buf = buf.freeze();
 
-        if tick != self.tick {
-            self.event_manager.notify_listeners(TickEvent {
+        if tick != self.state.tick {
+            self.notify_listeners(TickEvent {
                 tick,
-                tick_interval: self.tick_interval,
-            });
+                tick_interval: self.state.tick_interval,
+            })?;
         }
-        self.tick = tick;
+        self.state.tick = tick;
 
         let is_compressed = cmd & EDemoCommands::DemIsCompressed as i32 != 0;
         let cmd = cmd & !(EDemoCommands::DemIsCompressed as i32);
         if cmd == EDemoCommands::DemStop as i32 {
+            self.notify_listeners(DemoEndEvent)?;
             return Ok(false);
         }
 

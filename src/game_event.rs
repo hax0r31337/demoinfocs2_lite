@@ -41,7 +41,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             return Ok(());
         };
 
-        serializer.parse_and_dispatch_event(msg.keys, &mut self.event_manager)?;
+        serializer.parse_and_dispatch_event(msg.keys, &mut self.event_manager, &self.state)?;
 
         Ok(())
     }

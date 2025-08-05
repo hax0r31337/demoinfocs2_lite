@@ -3,6 +3,8 @@ use std::any::{Any, TypeId};
 use foldhash::{HashMap, HashMapExt};
 use log::error;
 
+use crate::CsDemoParserState;
+
 /// notifies listeners before changing the tick
 /// last tick is not notified
 pub struct TickEvent {
@@ -19,15 +21,22 @@ pub struct MapChangeEvent {
 
 impl Event for MapChangeEvent {}
 
+/// notifies after the parser reaches the last frame
+pub struct DemoEndEvent;
+
+impl Event for DemoEndEvent {}
+
 pub trait Event: Any + Send + Sync {}
 
 pub trait EventListener<T: Event>: Send + Sync {
-    fn on_event(&mut self, event: &T);
+    fn on_event(&mut self, event: &T, state: &CsDemoParserState) -> Result<(), std::io::Error>;
 }
 
-impl<F: Fn(&T) + Send + Sync, T: Event> EventListener<T> for F {
-    fn on_event(&mut self, event: &T) {
-        self(event);
+impl<F: Fn(&T, &CsDemoParserState) -> Result<(), std::io::Error> + Send + Sync, T: Event>
+    EventListener<T> for F
+{
+    fn on_event(&mut self, event: &T, state: &CsDemoParserState) -> Result<(), std::io::Error> {
+        self(event, state)
     }
 }
 
@@ -53,10 +62,12 @@ impl<T: Event> EventDispatcher<T> {
         listener_id
     }
 
-    pub fn dispatch(&mut self, event: T) {
+    pub fn dispatch(&mut self, event: T, state: &CsDemoParserState) -> Result<(), std::io::Error> {
         for (_, listener) in &mut self.listeners {
-            listener.on_event(&event);
+            listener.on_event(&event, state)?;
         }
+
+        Ok(())
     }
 
     pub fn remove_listener(&mut self, id: u32) {
@@ -110,11 +121,17 @@ impl EventManager {
         false
     }
 
-    pub fn notify_listeners<E: Event>(&mut self, event: E) {
+    pub fn notify_listeners<E: Event>(
+        &mut self,
+        event: E,
+        state: &CsDemoParserState,
+    ) -> Result<(), std::io::Error> {
         let type_id = TypeId::of::<E>();
         if let Some(listeners) = self.event_listeners.get_mut(&type_id) {
             let dispatcher = listeners.downcast_mut::<EventDispatcher<E>>().unwrap();
-            dispatcher.dispatch(event);
+            dispatcher.dispatch(event, state)
+        } else {
+            Ok(())
         }
     }
 }

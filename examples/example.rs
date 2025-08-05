@@ -1,9 +1,6 @@
-use bitstream_io::BitReader;
-use demoinfocs2_lite::{
-    entity::serializer::EntitySerializer, event::MapChangeEvent, game_event::derive::GameEvent,
-};
+use demoinfocs2_lite::{CsDemoParserState, event::MapChangeEvent, game_event::derive::GameEvent};
 use macro_derive::EntityClass;
-use std::io::{BufReader, Cursor};
+use std::io::BufReader;
 
 fn main() -> Result<(), std::io::Error> {
     env_logger::init();
@@ -20,16 +17,20 @@ fn main() -> Result<(), std::io::Error> {
 
     parser
         .event_manager
-        .register_listener(|event: &MapChangeEvent| {
+        .register_listener(|event: &MapChangeEvent, _state: &CsDemoParserState| {
             println!("Map changed: {}", event.map_name);
+
+            Ok(())
         });
 
     parser.register_game_event_serializer_factory("player_hurt", PlayerHurtEvent::factory)?;
-    parser
-        .event_manager
-        .register_listener(|event: &PlayerHurtEvent| {
+    parser.event_manager.register_listener(
+        |event: &PlayerHurtEvent, _state: &CsDemoParserState| {
             // println!("{event:?}");
-        });
+
+            Ok(())
+        },
+    );
     parser.register_entity_serializer("CCSPlayerController", CCSPlayerController::new_serializer);
     parser.register_entity_serializer("CCSGameRulesProxy", CCSGameRulesProxy::new_serializer);
     parser.register_entity_serializer("CCSGameRules", CCSGameRules::new_serializer);
@@ -60,6 +61,8 @@ pub struct PlayerHurtEvent {
 pub struct CCSPlayerController {
     #[entity(name = "m_iPing")]
     pub ping: u64,
+    #[entity(name = "m_iszPlayerName", on_changed = Self::on_changed)]
+    pub player_name: String,
 }
 
 #[derive(EntityClass, Clone, Default)]
@@ -74,4 +77,11 @@ pub struct CCSGameRulesProxy {
 pub struct CCSGameRules {
     #[entity(name = "m_pGameModeRules")]
     pub game_mode_rules: usize,
+}
+
+impl CCSPlayerController {
+    fn on_changed(&mut self) -> Result<(), std::io::Error> {
+        println!("Name changed: {} (ping {}ms)", self.player_name, self.ping);
+        Ok(())
+    }
 }

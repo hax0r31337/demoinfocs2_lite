@@ -628,7 +628,10 @@ impl EntitySerializer for PolymorphicSerializer {
 pub type CustomEntitySerializerType<T> = Box<
     [(
         Arc<dyn EntitySerializer>,
+        // getter of field reference
         Option<fn(&mut T) -> &mut dyn Any>,
+        // on changed callbacks
+        Option<fn(&mut T) -> Result<(), std::io::Error>>,
     )],
 >;
 
@@ -696,12 +699,16 @@ impl<T: EntityField> EntitySerializerTyped<T> for CustomEntitySerializer<T> {
             ));
         }
 
-        let (serializer, field_getter) = &self.serializers[idx];
+        let (serializer, field_getter, callback) = &self.serializers[idx];
 
         if let Some(e) = entity {
             if let Some(getter) = field_getter {
                 let field = getter(e);
                 serializer.decode(Some(field), &path[1..], reader)?;
+
+                if let Some(callback) = callback {
+                    callback(e)?;
+                }
             } else {
                 serializer.decode(None, &path[1..], reader)?;
             }

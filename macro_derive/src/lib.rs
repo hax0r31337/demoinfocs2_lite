@@ -139,7 +139,7 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
         }
 
         impl #crate_path::game_event::derive::GameEventSerializer for #ident_eid {
-            fn parse_and_dispatch_event(&self, keys: Vec<#crate_path::game_event::derive::KeyT>, event_manager: &mut #crate_path::event::EventManager) -> Result<(), std::io::Error> {
+            fn parse_and_dispatch_event(&self, keys: Vec<#crate_path::game_event::derive::KeyT>, event_manager: &mut #crate_path::event::EventManager, state: &#crate_path::CsDemoParserState) -> Result<(), std::io::Error> {
                 let mut v = #ident_msg::default();
 
                 for k in keys.into_iter() {
@@ -153,9 +153,7 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                event_manager.notify_listeners(v);
-
-                Ok(())
+                event_manager.notify_listeners(v, state)
             }
         }
     }
@@ -188,13 +186,14 @@ pub fn entity_class_derive(input: TokenStream) -> TokenStream {
         .filter_map(|f| {
             let field_ident = f.ident.as_ref()?;
             let getter_ident = Ident::new(&format!("{field_ident}_get"), field_ident.span());
-            let attr_name = get_entity_attr_name(&f.attrs)?;
+            let (attr_name, on_changed) = get_entity_attr_name(&f.attrs);
+            let attr_name = attr_name?;
 
-            Some((field_ident, getter_ident, attr_name))
+            Some((field_ident, getter_ident, attr_name, on_changed))
         })
         .collect::<Box<_>>();
 
-    let getters = fields.iter().map(|(field_ident, getter_ident, _)| {
+    let getters = fields.iter().map(|(field_ident, getter_ident, _, _)| {
         quote! {
             fn #getter_ident(e: &mut #ident) -> &mut dyn std::any::Any {
                 &mut e.#field_ident
@@ -202,12 +201,20 @@ pub fn entity_class_derive(input: TokenStream) -> TokenStream {
         }
     });
 
-    let match_branches = fields.iter().map(|(_, getter_ident, attr_name)| {
-        // TODO: perfect hash
-        quote! {
-            #attr_name => Some(#getter_ident as fn(&mut #ident) -> &mut dyn std::any::Any),
-        }
-    });
+    let match_branches = fields
+        .iter()
+        .map(|(_, getter_ident, attr_name, on_changed)| {
+            // TODO: perfect hash
+            if let Some(on_changed) = on_changed {
+                quote! {
+                    #attr_name => (Some(#getter_ident as fn(&mut #ident) -> &mut dyn std::any::Any), Some(#on_changed as fn(&mut #ident) -> Result<(), std::io::Error>)),
+                }
+            } else {
+                quote! {
+                    #attr_name => (Some(#getter_ident as fn(&mut #ident) -> &mut dyn std::any::Any), None),
+                }
+            }
+        });
 
     quote! {
         impl #crate_path::entity::serializer::EntityField for #ident {
@@ -225,12 +232,15 @@ pub fn entity_class_derive(input: TokenStream) -> TokenStream {
                 let new_serializers = serializers
                     .into_iter()
                     .map(|(n, s)| {
+                        let (getter, callback) = match n {
+                            #( #match_branches )*
+                            _ => (None, None),
+                        };
+
                         (
                             s,
-                            match n {
-                                #( #match_branches )*
-                                _ => None,
-                            },
+                            getter,
+                            callback,
                         )
                     })
                     .collect();
@@ -242,27 +252,32 @@ pub fn entity_class_derive(input: TokenStream) -> TokenStream {
     .into()
 }
 
-fn get_entity_attr_name(attrs: &[Attribute]) -> Option<String> {
+fn get_entity_attr_name(attrs: &[Attribute]) -> (Option<String>, Option<Path>) {
     for attr in attrs {
         if !attr.path().is_ident("entity") {
             continue;
         }
 
-        let mut found: Option<String> = None;
+        let mut name: Option<String> = None;
+        let mut on_changed: Option<Path> = None;
 
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
                 let lit: LitStr = meta.value()?.parse()?;
-                found = Some(lit.value());
+                name = Some(lit.value());
+                Ok(())
+            } else if meta.path.is_ident("on_changed") {
+                let value: Path = meta.value()?.parse()?;
+                on_changed = Some(value);
+                Ok(())
+            } else {
+                Err(meta.error("unsupported key for #[entity]"))
             }
-            Ok(())
         })
         .unwrap();
 
-        if found.is_some() {
-            return found;
-        }
+        return (Some(name.unwrap()), on_changed);
     }
 
-    None
+    (None, None)
 }
