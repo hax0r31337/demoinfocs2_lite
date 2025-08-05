@@ -25,6 +25,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         }
 
         self.game_event_serializers.insert(event_name, factory);
+
         Ok(())
     }
 
@@ -66,7 +67,8 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             let keys = descriptor
                 .keys
                 .into_iter()
-                .map(|key| (key.r#type.unwrap_or_default(), key.name.unwrap_or_default()))
+                .enumerate()
+                .map(|(index, key)| (index as u32, key.name.unwrap_or_default()))
                 .collect::<Box<[_]>>();
 
             let serializer = factory(&keys)?;

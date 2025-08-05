@@ -67,7 +67,7 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
     let fields = ast.fields.iter().map(|f| {
         let field_name = &f.ident;
         quote! {
-            #field_name: i32,
+            #field_name: u32,
         }
     });
 
@@ -90,7 +90,7 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
         let ident = type_ident(field_type).expect("Unsupported field type in GameEvent");
 
         let type_field = if ident == "bool" {
-            quote! {val_bool.map(|v| v as i32)}
+            quote! {val_bool}
         } else if ident == "u8" {
             quote! {val_byte.map(|v| v as u8)}
         } else if ident == "i16" || ident == "u16" {
@@ -98,9 +98,9 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
         } else if ident == "i32" || ident == "u32" {
             quote! {val_long.map(|v| v as #field_type)}
         } else if ident == "u64" {
-            quote! {val_uint64.map(|v| v as #field_type)}
+            quote! {val_uint64}
         } else if ident == "f32" {
-            quote! {val_float.map(|v| v as #field_type)}
+            quote! {val_float}
         } else if ident == "String" {
             quote! {val_string.map(|v| v.to_string())}
         } else {
@@ -112,7 +112,7 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
         };
 
         quote! {
-            if type_id == self.#field_name {
+            if i as u32 == self.#field_name {
                 v.#field_name = k.#type_field.ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -126,7 +126,7 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
     quote! {
         impl #crate_path::event::Event for #ident_msg {}
 
-        struct #ident_eid{
+        struct #ident_eid {
             #( #fields )*
         }
 
@@ -142,15 +142,8 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
             fn parse_and_dispatch_event(&self, keys: Vec<#crate_path::game_event::derive::KeyT>, event_manager: &mut #crate_path::event::EventManager, state: &#crate_path::CsDemoParserState) -> Result<(), std::io::Error> {
                 let mut v = #ident_msg::default();
 
-                for k in keys.into_iter() {
-                    if let Some(type_id) = k.r#type {
-                        #( #serializer )*
-                    } else {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Missing key type ID",
-                        ));
-                    }
+                for (i, k) in keys.into_iter().enumerate() {
+                    #( #serializer )*
                 }
 
                 event_manager.notify_listeners(v, state)

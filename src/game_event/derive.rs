@@ -2,7 +2,7 @@ use crate::{event::EventManager, protobuf};
 
 pub use macro_derive::GameEvent;
 
-pub type ListKeysT = [(i32, String)];
+pub type ListKeysT = [(u32, String)];
 pub type KeyT = protobuf::c_msg_source1_legacy_game_event::KeyT;
 
 pub type GameEventSerializerFactory =
