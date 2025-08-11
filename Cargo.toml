@@ -1,7 +1,13 @@
 [package]
 name = "demoinfocs2_lite"
+description = "Fast & Elegant demo parser for Counter-Strike 2 in Rust."
 version = "0.1.0"
 edition = "2024"
+license = "BSD-3-Clause"
+readme = "README.md"
+repository = "https://github.com/hax0r31337/demoinfocs2_lite"
+categories = ["parsing"]
+keywords = ["cs2", "counter-strike", "demo", "source2"]
 
 [workspace]
 members = [
