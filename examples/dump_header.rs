@@ -14,16 +14,8 @@ use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use log::warn;
 use prost::Message;
 
-#[cfg(not(feature = "handle_packet"))]
-fn main() {
-    panic!(
-        "This example requires the 'handle_packet' feature to be enabled. Please run with `--features handle_packet`."
-    );
-}
-
 static EXTRACT_STATE: Mutex<(bool, bool)> = Mutex::new((false, false));
 
-#[cfg(feature = "handle_packet")]
 fn main() -> Result<(), std::io::Error> {
     use demoinfocs2_lite::{
         event::DemoStartEvent,
@@ -287,7 +279,7 @@ fn handle_send_tables(
 
         for field in serializer_class.fields {
             if let Some(comment) = field.comment {
-                println!("\t// {comment}");
+                println!("\t/// {comment}");
             }
 
             println!("\t#[entity(name = \"{}\")]", field.var_name);
