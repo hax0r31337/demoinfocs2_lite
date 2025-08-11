@@ -14,17 +14,25 @@ pub struct TickEvent {
 
 impl Event for TickEvent {}
 
-/// notifies whenever map changes
-pub struct MapChangeEvent {
+/// notifies whenever demo parsed the first frame
+pub struct DemoStartEvent {
+    pub network_protocol: i32,
     pub map_name: String,
 }
 
-impl Event for MapChangeEvent {}
+impl Event for DemoStartEvent {}
 
 /// notifies after the parser reaches the last frame
 pub struct DemoEndEvent;
 
 impl Event for DemoEndEvent {}
+
+#[cfg(feature = "handle_packet")]
+pub struct PacketEvent<T: prost::Message + 'static> {
+    pub packet: T,
+}
+
+impl<T: prost::Message + 'static> Event for PacketEvent<T> {}
 
 pub trait Event: Any + Send + Sync {}
 
@@ -83,6 +91,7 @@ impl<T: Event> EventDispatcher<T> {
     }
 }
 
+#[derive(Default)]
 pub struct EventManager {
     event_listeners: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }

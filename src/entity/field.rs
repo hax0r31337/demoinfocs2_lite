@@ -33,6 +33,12 @@ static FIELD_TYPE_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|
     Regex::new(r"([^<\[\*]+)(?:<\s(.+?)\s>)?(\*)?(?:\[(.+?)\])?").unwrap()
 });
 
+const LIST_GENERIC_TYPE: [&str; 3] = [
+    "CNetworkUtlVectorBase",
+    "CUtlVectorEmbeddedNetworkVar",
+    "CUtlVector",
+];
+
 #[derive(Debug)]
 pub struct FieldType {
     pub base_type: String,
@@ -88,5 +94,17 @@ impl FieldType {
             is_optional,
             array_size,
         })
+    }
+
+    pub fn get_var_type(&self) -> &str {
+        if let Some(generic_type) = &self.generic_type {
+            if LIST_GENERIC_TYPE.contains(&self.base_type.as_str()) {
+                &generic_type.base_type
+            } else {
+                &self.base_type
+            }
+        } else {
+            &self.base_type
+        }
     }
 }

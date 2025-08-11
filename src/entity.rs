@@ -1,9 +1,10 @@
 pub mod decoder;
-pub mod derive;
 pub mod field;
 pub mod fieldpath;
 pub mod list;
 pub mod serializer;
+
+pub use macro_derive::EntityClass;
 
 use std::{any::Any, io::Cursor, sync::Arc};
 

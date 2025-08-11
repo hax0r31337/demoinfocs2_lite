@@ -11,6 +11,10 @@ members = [
 [profile.release]
 debug = true
 
+[features]
+default = ["handle_packet"]
+handle_packet = []
+
 [lib]
 crate-type = ["lib"]
 

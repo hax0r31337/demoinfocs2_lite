@@ -19,27 +19,13 @@ use crate::{
 
 include!(concat!(env!("OUT_DIR"), "/demoinfo2.rs"));
 
-const LIST_GENERIC_TYPE: [&str; 3] = [
-    "CNetworkUtlVectorBase",
-    "CUtlVectorEmbeddedNetworkVar",
-    "CUtlVector",
-];
-
 pub fn get_serializer(
     field_type: &FieldType,
     var_name: &str,
     encoder: Option<&str>,
     field_pb: &protobuf::ProtoFlattenedSerializerFieldT,
 ) -> Result<Arc<dyn EntitySerializer>, std::io::Error> {
-    let var_type = if let Some(generic_type) = &field_type.generic_type {
-        if LIST_GENERIC_TYPE.contains(&field_type.base_type.as_str()) {
-            &generic_type.base_type
-        } else {
-            &field_type.base_type
-        }
-    } else {
-        &field_type.base_type
-    };
+    let var_type = field_type.get_var_type();
     let (mut net_type, components) = match BASIC_ENCODINGS.get(var_type) {
         Some((net_type, components)) => (*net_type, *components),
         None => {

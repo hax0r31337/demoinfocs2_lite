@@ -1,5 +1,6 @@
-use demoinfocs2_lite::{CsDemoParserState, event::MapChangeEvent, game_event::derive::GameEvent};
-use macro_derive::EntityClass;
+use demoinfocs2_lite::{
+    CsDemoParserState, entity::EntityClass, event::DemoStartEvent, game_event::derive::GameEvent,
+};
 use std::io::BufReader;
 
 fn main() -> Result<(), std::io::Error> {
@@ -17,7 +18,7 @@ fn main() -> Result<(), std::io::Error> {
 
     parser
         .event_manager
-        .register_listener(|event: &MapChangeEvent, _state: &CsDemoParserState| {
+        .register_listener(|event: &DemoStartEvent, _state: &CsDemoParserState| {
             println!("Map changed: {}", event.map_name);
 
             Ok(())

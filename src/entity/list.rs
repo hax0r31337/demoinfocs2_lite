@@ -39,8 +39,10 @@ struct EntityChunk {
 impl EntityList {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self {
-            entity_chunk: [const { None }; MAX_ENTITY_LISTS],
+        const {
+            Self {
+                entity_chunk: [const { None }; MAX_ENTITY_LISTS],
+            }
         }
     }
 

@@ -1,7 +1,7 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::Ident;
+use proc_macro2::{Ident, Literal};
 use quote::quote;
 use syn::{Attribute, ItemStruct, LitStr, Path, Result, parse_macro_input};
 
@@ -71,17 +71,26 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
         }
     });
 
-    let factory = ast.fields.iter().map(|f| {
+    let factory = ast.fields.iter().filter_map(|f| {
         let field_name = &f.ident;
-        quote! {
+        let field_name_str = if let Some(field_name) = field_name {
+            field_name.to_string()
+        } else {
+            return None;
+        };
+
+        let field_name_str = field_name_str.trim_start_matches("r#");
+        let field_name_lit = Literal::string(field_name_str);
+
+        Some(quote! {
             #field_name: keys.iter()
-                .find(|(_, name)| name == stringify!(#field_name))
+                .find(|(_, name)| name == #field_name_lit)
                 .map(|(value, _)| *value)
                 .ok_or_else(|| std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("Missing field: {}", stringify!(#field_name))
+                    format!("Missing field: {}", #field_name_lit)
                 ))?,
-        }
+        })
     });
 
     let serializer = ast.fields.iter().map(|f| {
@@ -102,7 +111,7 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
         } else if ident == "f32" {
             quote! {val_float}
         } else if ident == "String" {
-            quote! {val_string.map(|v| v.to_string())}
+            quote! {val_string.take().map(|v| v.to_string())}
         } else {
             panic!(
                 "Unsupported field type: {} for field: {} in GameEvent",
@@ -142,7 +151,7 @@ pub fn game_event_derive(input: TokenStream) -> TokenStream {
             fn parse_and_dispatch_event(&self, keys: Vec<#crate_path::game_event::derive::KeyT>, event_manager: &mut #crate_path::event::EventManager, state: &#crate_path::CsDemoParserState) -> Result<(), std::io::Error> {
                 let mut v = #ident_msg::default();
 
-                for (i, k) in keys.into_iter().enumerate() {
+                for (i, mut k) in keys.into_iter().enumerate() {
                     #( #serializer )*
                 }
 
@@ -178,7 +187,10 @@ pub fn entity_class_derive(input: TokenStream) -> TokenStream {
         .iter()
         .filter_map(|f| {
             let field_ident = f.ident.as_ref()?;
-            let getter_ident = Ident::new(&format!("{field_ident}_get"), field_ident.span());
+            let field_ident_str = field_ident.to_string();
+            let field_ident_str = field_ident_str.trim_start_matches("r#");
+
+            let getter_ident = Ident::new(&format!("{field_ident_str}_get"), field_ident.span());
             let (attr_name, on_changed) = get_entity_attr_name(&f.attrs);
             let attr_name = attr_name?;
 

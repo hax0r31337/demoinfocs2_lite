@@ -22,7 +22,7 @@ use crate::entity::EntitySerializerCreator;
 use crate::entity::fieldpath::FieldPathFixed;
 use crate::entity::list::EntityList;
 use crate::entity::serializer::EntityClassSerializer;
-use crate::event::{DemoEndEvent, Event, EventManager, MapChangeEvent, TickEvent};
+use crate::event::{DemoEndEvent, DemoStartEvent, Event, EventManager, TickEvent};
 use crate::game_event::derive::{GameEventSerializer, GameEventSerializerFactory};
 use crate::protobuf::{EBaseGameEvents, EDemoCommands, SvcMessages};
 use crate::string_table::{BaselineStringTableParser, StringTable};
@@ -34,6 +34,12 @@ pub struct CsDemoParser<T: std::io::BufRead + Send + Sync> {
     reader: T,
 
     pub event_manager: EventManager,
+    #[allow(clippy::type_complexity)]
+    #[cfg(feature = "handle_packet")]
+    packet_handler: HashMap<
+        u64,
+        Box<dyn Fn(Bytes, &mut EventManager, &CsDemoParserState) -> Result<(), std::io::Error>>,
+    >,
     pub state: CsDemoParserState,
 
     class_info: HashMap<u32, String>,
@@ -56,6 +62,7 @@ pub struct CsDemoParserState {
     pub tick: u32,
     pub tick_interval: f32,
     pub map_name: String,
+    pub network_protocol: i32,
 
     pub entities: EntityList,
     user_info: Option<StringTable<BaselineStringTableParser, protobuf::CMsgPlayerInfo>>,
@@ -74,10 +81,10 @@ impl CsDemoParserState {
 
 impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
     pub fn new(reader: T) -> Result<CsDemoParser<T>, std::io::Error> {
-        Self::new_with_serializers(reader, HashMap::default(), HashMap::default())
+        Self::new_pre_registered(reader, HashMap::default(), HashMap::default())
     }
 
-    pub fn new_with_serializers(
+    pub fn new_pre_registered(
         mut reader: T,
         game_event_serializers: HashMap<&'static str, GameEventSerializerFactory>,
         entity_serializer_creators: HashMap<&'static str, EntitySerializerCreator>,
@@ -100,10 +107,13 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         Ok(CsDemoParser {
             reader,
             event_manager: EventManager::new(),
+            #[cfg(feature = "handle_packet")]
+            packet_handler: HashMap::default(),
             state: CsDemoParserState {
                 tick: 0,
                 tick_interval: 1.0 / 64.0, // default tick interval
                 map_name: String::new(),
+                network_protocol: 0,
                 // most demos seems doesn't exceed 0x400 entities
                 entities: EntityList::new(),
                 user_info: None,
@@ -119,6 +129,48 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             field_path_cache: Vec::with_capacity(256),
             buffer: BytesMut::with_capacity(BUFFER_SIZE),
         })
+    }
+
+    #[cfg(feature = "handle_packet")]
+    fn register_packet_handler_internal<M: prost::Message + Default + 'static>(
+        &mut self,
+        message_type: u64,
+    ) {
+        if self.packet_handler.contains_key(&message_type) {
+            warn!("Packet handler for message type {message_type} already registered, overwriting");
+        }
+
+        self.packet_handler.insert(
+            message_type,
+            Box::new(
+                |buf: Bytes, event_manager: &mut EventManager, state: &CsDemoParserState| {
+                    let msg = M::decode(buf).map_err(|err| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Failed to decode message: {err:?}"),
+                        )
+                    })?;
+
+                    event_manager.notify_listeners(crate::event::PacketEvent { packet: msg }, state)
+                },
+            ),
+        );
+    }
+
+    #[cfg(feature = "handle_packet")]
+    pub fn register_packet_handler<M: prost::Message + Default + 'static>(
+        &mut self,
+        message_type: u32,
+    ) {
+        self.register_packet_handler_internal::<M>(message_type as u64);
+    }
+
+    #[cfg(feature = "handle_packet")]
+    pub fn register_demo_command_handler<M: prost::Message + Default + 'static>(
+        &mut self,
+        message_type: u32,
+    ) {
+        self.register_packet_handler_internal::<M>((message_type as u64) | (1 << 32));
     }
 
     pub fn notify_listeners<E: Event>(&mut self, event: E) -> Result<(), std::io::Error> {
@@ -213,6 +265,26 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         Ok(())
     }
 
+    #[inline(always)]
+    fn read_slice_from_demo_packet(
+        &mut self,
+        data: &Bytes,
+        r: &mut BitReader<Cursor<&Bytes>, bitstream_io::LittleEndian>,
+        size: usize,
+    ) -> Result<Bytes, std::io::Error> {
+        Ok(if r.byte_aligned() {
+            // perform zero-copy if possible
+            let pos = r.position_in_bits()? as usize >> 3;
+            let buf = data.slice(pos..pos + size);
+            r.seek_bits(std::io::SeekFrom::Current((size as i64) << 3))?;
+            buf
+        } else {
+            let mut buf = self.alloc_bytes(size);
+            r.read_bytes(&mut buf)?;
+            buf.freeze()
+        })
+    }
+
     fn handle_demo_packet(&mut self, msg: protobuf::CDemoPacket) -> Result<(), std::io::Error> {
         let Some(data) = msg.data else {
             return Ok(());
@@ -225,21 +297,23 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             let message_type = r.read_ubit_int()?;
             let size = r.read_varint_u64()? as usize;
 
+            #[cfg(feature = "handle_packet")]
+            let buf = {
+                let buf = self.read_slice_from_demo_packet(&data, &mut r, size)?;
+
+                if let Some(handler) = self.packet_handler.get(&(message_type as u64)) {
+                    handler(buf.clone(), &mut self.event_manager, &self.state)?;
+                }
+
+                buf
+            };
+
             macro_rules! handle_message {
                 ($(($mt:expr, $handler:ident)),*) => {
                     $(
                         if message_type == $mt as u32 {
-                            let buf = if r.byte_aligned() {
-                                // perform zero-copy if possible
-                                let pos = r.position_in_bits()? as usize >> 3;
-                                let buf = data.slice(pos..pos + size);
-                                r.seek_bits(std::io::SeekFrom::Current((size as i64) << 3))?;
-                                buf
-                            } else {
-                                let mut buf = self.alloc_bytes(size);
-                                r.read_bytes(&mut buf)?;
-                                buf.freeze()
-                            };
+                            #[cfg(not(feature = "handle_packet"))]
+                            let buf = self.read_slice_from_demo_packet(&data, &mut r, size)?;
 
                             let msg = self.parse_demo_message(buf, false)?;
 
@@ -272,6 +346,7 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                 (SvcMessages::SvcServerInfo, handle_server_info)
             );
 
+            #[cfg(not(feature = "handle_packet"))]
             r.seek_bits(std::io::SeekFrom::Current((size as i64) << 3))?;
         }
 
@@ -299,11 +374,6 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
         msg: protobuf::CDemoFileHeader,
     ) -> Result<(), std::io::Error> {
         if let Some(map_name) = msg.map_name {
-            let event = MapChangeEvent {
-                map_name: map_name.clone(),
-            };
-            self.notify_listeners(event)?;
-
             self.state.map_name = map_name;
         } else {
             return Err(std::io::Error::new(
@@ -311,6 +381,21 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
                 "Missing map name in demo file header",
             ));
         }
+
+        let Some(network_protocol) = msg.network_protocol else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Missing network protocol in demo file header",
+            ));
+        };
+
+        self.state.network_protocol = network_protocol;
+
+        let event = DemoStartEvent {
+            network_protocol,
+            map_name: self.state.map_name.clone(),
+        };
+        self.notify_listeners(event)?;
 
         Ok(())
     }
@@ -373,11 +458,32 @@ impl<T: std::io::BufRead + Send + Sync> CsDemoParser<T> {
             return Ok(false);
         }
 
+        #[cfg(feature = "handle_packet")]
+        let buf = {
+            let buf = if is_compressed {
+                self.snap_decompress_bytes(&buf)?
+            } else {
+                buf
+            };
+
+            let message_type = (cmd as u64) | (1 << 32);
+            if let Some(handler) = self.packet_handler.get(&message_type) {
+                handler(buf.clone(), &mut self.event_manager, &self.state)?;
+            }
+
+            buf
+        };
+
         macro_rules! handle_command {
             ($(($cmd:expr, $handler:ident)),*) => {
                 $(
                     if cmd == $cmd as i32 {
+                        #[cfg(not(feature = "handle_packet"))]
                         let msg = self.parse_demo_message(buf, is_compressed)?;
+
+                        // the buf is already decompressed
+                        #[cfg(feature = "handle_packet")]
+                        let msg = self.parse_demo_message(buf, false)?;
 
                         self.$handler(msg)?;
 
