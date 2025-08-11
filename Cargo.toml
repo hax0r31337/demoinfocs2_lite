@@ -12,7 +12,7 @@ members = [
 debug = true
 
 [features]
-default = ["handle_packet"]
+default = []
 handle_packet = []
 
 [lib]

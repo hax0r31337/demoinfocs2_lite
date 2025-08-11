@@ -32,6 +32,7 @@ pub struct PacketEvent<T: prost::Message + 'static> {
     pub packet: T,
 }
 
+#[cfg(feature = "handle_packet")]
 impl<T: prost::Message + 'static> Event for PacketEvent<T> {}
 
 pub trait Event: Any + Send + Sync {}
